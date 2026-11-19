@@ -106,6 +106,7 @@ def parse_answers(state: TaskState, multiple_correct: bool) -> set[str]:
         r"\1\2\3",
         completion,
     )
+    completion = _strip_answer_decoration(completion)
 
     # First check whether the string strictly ends with the expected answer
     # In this case, we're looking for a single line which contains the expected
@@ -169,7 +170,57 @@ def parse_answers(state: TaskState, multiple_correct: bool) -> set[str]:
             answers = {single_tokens[0]}
             return answers
 
+        # A letter followed by its own option text ("ANSWER: D chromatin
+        # remodeling") names that option; any other trailing text does not, so
+        # "ANSWER: I don't know" never reads as I.
+        letter_and_text = re.fullmatch(r"([A-Z]) +(\S.*)", matched)
+        if letter_and_text and letter_and_text.group(1) in allowed_options:
+            letter, text = letter_and_text.groups()
+            option = state.choices[answer_index(letter)].value
+            if _same_option_text(text, option):
+                return {letter}
+
     return set()
+
+
+# Markdown emphasis or a code span closed around the label ("**ANSWER:** C",
+# "*Answer*: C", "**Final Answer:** C"); the colon may sit inside or outside.
+_DECORATED_LABEL = re.compile(
+    r"(?im)(\*\*|__|\*|_|\x60)[ \t]*+((?:final[ \t]+)?answer)[ \t]*+(:?)[ \t]*+\1[ \t]*+(:?)"
+)
+# A wrapper opened right after the label and closed later on the same line
+# ("ANSWER: **C) Paris**", "ANSWER: `C`"). Unclosed wrappers are left alone.
+_WRAPPED_AFTER_LABEL = re.compile(
+    r"(?im)(answer[ \t]*+:[ \t]*+)(\*\*|__|\*(?!\*)|_(?!_)|\x60)(?=[A-Za-z\d])([^\n]*?)\2"
+)
+# An opening bracket or quote right after the label, closed right after the
+# letter ("ANSWER: (C) Paris", "ANSWER: [C]"), or the "$" the default templates
+# use in "ANSWER: $LETTER" copied literally ("ANSWER: $D").
+_OPENER_AFTER_LABEL = re.compile(
+    r"(?im)(answer[ \t]*+:[ \t]*+)(?:[(\[\"'](?=[A-Za-z\d][)\]\"'])|\x24(?=[A-Za-z\d]\b))"
+)
+
+
+def _strip_answer_decoration(completion: str) -> str:
+    def label(m: re.Match[str]) -> str:
+        return m.group(2) + ":" if (m.group(3) or m.group(4)) else m.group(0)
+
+    completion = _DECORATED_LABEL.sub(label, completion)
+    completion = _WRAPPED_AFTER_LABEL.sub(r"\1\3", completion)
+    return _OPENER_AFTER_LABEL.sub(r"\1", completion)
+
+
+def _same_option_text(text: str, option: str) -> bool:
+    def norm(s: str) -> str:
+        return " ".join(re.sub(r"[^\w]+", " ", s.casefold()).split())
+
+    text, option = norm(text), norm(option)
+    if not text or not option:
+        return False
+    # the parsed text stops at punctuation, so it may be only the option's start
+    return (
+        option == text or option.startswith(text + " ") or text.startswith(option + " ")
+    )
 
 
 def set_choices_based_on_generated_response(

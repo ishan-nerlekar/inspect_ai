@@ -775,3 +775,77 @@ async def test_model_answer_zero_scores_incorrect() -> None:
     scorer = choice()
     result = await scorer(new_state, Target("A"))
     assert result is not None and result.value == INCORRECT
+
+
+CAPITALS = ["Berlin", "Madrid", "Paris", "Rome"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        # decorated label (#6535)
+        ("**ANSWER:** C", {"Paris"}),
+        ("**Answer:** C", {"Paris"}),
+        ("*Answer*: C", {"Paris"}),
+        ("__ANSWER:__ C", {"Paris"}),
+        ("**Final Answer:** C", {"Paris"}),
+        ("**ANSWER:** **C**", {"Paris"}),
+        # decorated letter (#6535)
+        ("ANSWER: (C) Paris", {"Paris"}),
+        ("ANSWER: **C) Paris**", {"Paris"}),
+        ("ANSWER: `C`", {"Paris"}),
+        ("ANSWER: [C]", {"Paris"}),
+        ('ANSWER: "C"', {"Paris"}),
+        ("ANSWER: $C", {"Paris"}),
+        # letter followed by its own option text
+        ("ANSWER: C Paris", {"Paris"}),
+        ("ANSWER: `C` Paris", {"Paris"}),
+        ("ANSWER: C paris, the capital of France", {"Paris"}),
+        # controls
+        ("ANSWER: C", {"Paris"}),
+        ("**ANSWER: C**", {"Paris"}),
+        # still not an answer
+        ("ANSWER: C Berlin", set()),
+        ("ANSWER: A lot depends on the context", set()),
+        ("ANSWER: A B", set()),
+        ("ANSWER: (A, B)", set()),
+        ("ANSWER: (see above) C", set()),
+        ("ANSWER: **C", set()),
+        ("ANSWER: (C Berlin", set()),
+        ("ANSWER: C13H12O2", set()),
+        ("The **answer** is C", set()),
+    ],
+)
+@pytest.mark.anyio
+async def test_decorated_label_letter_and_option_text(answer: str, expected: set[str]):
+    generate = generate_for_multiple_correct(answers=answer)
+    solver = multiple_choice()
+    state = simple_task_state(
+        choices=CAPITALS,
+        messages=[ChatMessageUser(content="What's the answer?", source="input")],
+    )
+    new_state = await solver(state=state, generate=generate)
+    assert choices_marked_correct(new_state.choices) == expected
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "**" + " " * 50_000 + "!\nANSWER: C",
+        "ANSWER: **" + " " * 50_000 + "!\nANSWER: C",
+        "* " * 50_000 + "\nANSWER: C",
+        "ANSWER: `" + "a" * 50_000 + "\nANSWER: C",
+    ],
+)
+@pytest.mark.anyio
+async def test_answer_decoration_parsing_is_linear(answer: str):
+    generate = generate_for_multiple_correct(answers=answer)
+    solver = multiple_choice()
+    state = simple_task_state(
+        choices=CAPITALS,
+        messages=[ChatMessageUser(content="What's the answer?", source="input")],
+    )
+    start = time.perf_counter()
+    new_state = await solver(state=state, generate=generate)
+    assert time.perf_counter() - start < 1.0
+    assert choices_marked_correct(new_state.choices) == {"Paris"}
